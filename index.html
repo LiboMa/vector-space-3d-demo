@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>向量空间 3D 可视化 Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f0f2f5;
+      padding: 20px;
+      color: #333;
+    }
+    h1 { font-size: 1.4rem; margin-bottom: 16px; }
+    h2 { font-size: 1.1rem; margin: 24px 0 12px; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    #vecInput {
+      width: 340px;
+      height: 72px;
+      font-family: monospace;
+      font-size: 0.9rem;
+      padding: 6px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      resize: vertical;
+    }
+    #drawBtn {
+      padding: 8px 16px;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    #drawBtn:hover { background: #357abd; }
+    .add-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    #errMsg {
+      display: none;
+      color: #c0392b;
+      background: #fdecea;
+      border: 1px solid #e74c3c;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 0.85rem;
+      max-width: 420px;
+    }
+
+    #board {
+      display: block;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+      cursor: grab;
+    }
+    #board:active { cursor: grabbing; }
+
+    .axis-legend {
+      margin-top: 8px;
+      font-size: 0.8rem;
+      color: #666;
+    }
+    .axis-legend span { margin-right: 12px; font-weight: bold; }
+
+    #info {
+      margin-top: 16px;
+      font-size: 0.85rem;
+      line-height: 1.7;
+    }
+    #info h3 { font-size: 1rem; margin-bottom: 6px; }
+    #info ul { padding-left: 20px; }
+    #info li { margin-bottom: 2px; }
+
+    .samples-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .sample-card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .sample-card h3 {
+      font-size: 0.88rem;
+      margin-bottom: 8px;
+      color: #555;
+      text-align: center;
+    }
+    .sample-canvas { display: block; }
+  </style>
+</head>
+<body>
+  <h1>向量空间 3D 可视化 Demo</h1>
+
+  <div class="controls">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <label for="vecInput" style="font-size:0.85rem;color:#555">
+        向量数组（JSON，每个元素 [x, y] 或 [x, y, z]）：
+      </label>
+      <textarea id="vecInput">[[1,2,3],[0,1,0],[-2,1,2]]</textarea>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:10px;justify-content:flex-end">
+      <button id="drawBtn">绘制 / 更新</button>
+      <label class="add-toggle">
+        <input type="checkbox" id="addToggle" />
+        显示向量加法 (a+b)
+      </label>
+    </div>
+    <div id="errMsg"></div>
+  </div>
+
+  <!-- 主交互 3D 画布 -->
+  <canvas id="board" width="600" height="480"></canvas>
+
+  <div class="axis-legend">
+    坐标轴：<span style="color:#ff2222">X (红)</span>
+            <span style="color:#22cc22">Y (绿)</span>
+            <span style="color:#2222ff">Z (蓝)</span>
+    &nbsp;·&nbsp; 拖拽鼠标可旋转视角
+  </div>
+
+  <!-- 向量列表 -->
+  <div id="info"></div>
+
+  <!-- 样本范例小图区 -->
+  <h2>样本范例</h2>
+  <div class="samples-grid" id="samplesGrid"></div>
+
+  <script type="module">
+    import * as THREE from './vendor/three.module.min.js';
+
+    // ── 颜色表 ─────────────────────────────────────────────────────────────────
+    const COLORS_HEX = [0xe74c3c, 0x3498db, 0x2ecc71, 0x9b59b6,
+                        0xf39c12, 0x1abc9c, 0xe67e22, 0x2c3e50];
+    const COLORS_CSS = ['#e74c3c','#3498db','#2ecc71','#9b59b6',
+                        '#f39c12','#1abc9c','#e67e22','#2c3e50'];
+
+    // ── 解析：接受 [x,y] 或 [x,y,z]，z 缺省为 0 ───────────────────────────────
+    function parseVectors(text) {
+      let parsed;
+      try { parsed = JSON.parse(text); }
+      catch (e) { throw new Error('JSON 格式错误：' + e.message); }
+      if (!Array.isArray(parsed)) throw new Error('顶层必须是数组，如 [[1,2],[3,4]]');
+      for (let i = 0; i < parsed.length; i++) {
+        const v = parsed[i];
+        if (!Array.isArray(v) || v.length < 2 || v.length > 3)
+          throw new Error(`第 ${i+1} 个元素不是长度为 2 或 3 的数组`);
+        for (let j = 0; j < v.length; j++) {
+          if (typeof v[j] !== 'number' || !Number.isFinite(v[j]))
+            throw new Error(`第 ${i+1} 个元素含非数字或非有限数`);
+        }
+      }
+      return parsed.map(v => [v[0], v[1], v[2] !== undefined ? v[2] : 0]);
+    }
+
+    // ── 建立 ArrowHelper 列表并加入场景，返回列表供后续删除 ──────────────────
+    function buildArrows(scene, vectors, showSum) {
+      const list = [];
+      if (!vectors.length) return list;
+
+      const maxLen = Math.max(1e-10, ...vectors.map(v => Math.hypot(v[0], v[1], v[2])));
+      const scale  = 2.5 / maxLen;
+
+      function addArrow(v, hex) {
+        const [sx, sy, sz] = v.map(c => c * scale);
+        const len = Math.hypot(sx, sy, sz);
+        if (len < 1e-7) return;
+        const dir = new THREE.Vector3(sx, sy, sz).normalize();
+        const hl  = Math.min(0.4,  len * 0.22);
+        const hw  = Math.min(0.2,  len * 0.12);
+        const arrow = new THREE.ArrowHelper(dir, new THREE.Vector3(), len, hex, hl, hw);
+        scene.add(arrow);
+        list.push(arrow);
+      }
+
+      vectors.forEach((v, i) => addArrow(v, COLORS_HEX[i % COLORS_HEX.length]));
+
+      if (showSum && vectors.length >= 2) {
+        const [a, b] = vectors;
+        addArrow([a[0]+b[0], a[1]+b[1], a[2]+b[2]], 0xe91e63);
+      }
+      return list;
+    }
+
+    // ── 创建一个 Three.js 3D 场景到目标 canvas ────────────────────────────────
+    // interactive=true 时开启鼠标拖拽旋转；所有场景均持续自动旋转
+    function createVectorScene(canvas, initVectors, interactive) {
+      const W = canvas.width, H = canvas.height;
+
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+      renderer.setSize(W, H);
+      renderer.setClearColor(0xfafafa);
+
+      const scene = new THREE.Scene();
+      const cam   = new THREE.PerspectiveCamera(50, W / H, 0.01, 200);
+
+      scene.add(new THREE.AmbientLight(0xffffff, 2));
+      scene.add(new THREE.GridHelper(6, 6, 0xbbbbbb, 0xdddddd));
+      scene.add(new THREE.AxesHelper(3));
+
+      // 球坐标轨道：初始位置近似 (5, 4, 6)
+      const R     = Math.hypot(5, 4, 6);
+      let theta   = Math.atan2(5, 6);          // 水平角（绕 Y 轴）
+      let phi     = Math.acos(4 / R);          // 极角（从 Y 轴量起）
+
+      function moveCam() {
+        cam.position.set(
+          R * Math.sin(phi) * Math.sin(theta),
+          R * Math.cos(phi),
+          R * Math.sin(phi) * Math.cos(theta)
+        );
+        cam.lookAt(0, 0, 0);
+      }
+      moveCam();
+
+      let arrows   = buildArrows(scene, initVectors, false);
+      let dragging = false, lastMX = 0, lastMY = 0;
+
+      if (interactive) {
+        canvas.addEventListener('mousedown', e => {
+          dragging = true; lastMX = e.clientX; lastMY = e.clientY;
+          e.preventDefault();
+        });
+        window.addEventListener('mousemove', e => {
+          if (!dragging) return;
+          theta -= (e.clientX - lastMX) * 0.01;
+          phi    = Math.max(0.15, Math.min(Math.PI - 0.15,
+                            phi + (e.clientY - lastMY) * 0.01));
+          lastMX = e.clientX; lastMY = e.clientY;
+        });
+        window.addEventListener('mouseup', () => { dragging = false; });
+      }
+
+      function animate() {
+        requestAnimationFrame(animate);
+        if (!dragging) theta += 0.008;   // 自动旋转
+        moveCam();
+        renderer.render(scene, cam);
+      }
+      animate();
+
+      return {
+        update(vecs, showSum) {
+          arrows.forEach(a => scene.remove(a));
+          arrows = buildArrows(scene, vecs, showSum);
+        }
+      };
+    }
+
+    // ── DOM 引用 ───────────────────────────────────────────────────────────────
+    const mainCanvas = document.getElementById('board');
+    const textarea   = document.getElementById('vecInput');
+    const drawBtn    = document.getElementById('drawBtn');
+    const addToggle  = document.getElementById('addToggle');
+    const errMsg     = document.getElementById('errMsg');
+    const infoDiv    = document.getElementById('info');
+
+    let lastVectors  = parseVectors(textarea.value.trim());
+    const mainScene  = createVectorScene(mainCanvas, lastVectors, true);
+
+    function showErr(msg) { errMsg.textContent = '⚠ ' + msg; errMsg.style.display = 'block'; }
+    function clearErr()   { errMsg.textContent = '';          errMsg.style.display = 'none';  }
+
+    function updateInfo(vectors) {
+      if (!vectors.length) {
+        infoDiv.innerHTML = '<h3>向量列表</h3><p style="color:#888">（空数组，无向量）</p>';
+        return;
+      }
+      const items = vectors.map(([x, y, z], i) => {
+        const c   = COLORS_CSS[i % COLORS_CSS.length];
+        const len = Math.hypot(x, y, z).toFixed(2);
+        return `<li><span style="color:${c}">■</span> ` +
+               `v<sub>${i+1}</sub> = (${x}, ${y}, ${z})，模长 |v| = ${len}</li>`;
+      }).join('');
+      infoDiv.innerHTML = `<h3>向量列表</h3><ul>${items}</ul>`;
+    }
+
+    drawBtn.addEventListener('click', () => {
+      clearErr();
+      try {
+        const vecs = parseVectors(textarea.value.trim());
+        lastVectors = vecs;
+        mainScene.update(vecs, addToggle.checked);
+        updateInfo(vecs);
+      } catch (e) {
+        showErr(e.message);
+      }
+    });
+
+    addToggle.addEventListener('change', () => {
+      mainScene.update(lastVectors, addToggle.checked);
+    });
+
+    updateInfo(lastVectors);
+
+    // ── 样本范例：4 组小图 ─────────────────────────────────────────────────────
+    const SAMPLES = [
+      {
+        title: '标准正交基 i / j / k',
+        vecs:  [[1,0,0],[0,1,0],[0,0,1]]
+      },
+      {
+        title: '线性相关组',
+        vecs:  [[1,1,1],[2,2,2],[-1,-1,-1]]
+      },
+      {
+        title: '3D 立方体顶点方向',
+        vecs:  [[1,0,0],[0,1,0],[0,0,1],[-1,0,0],[0,-1,0],[0,0,-1]]
+      },
+      {
+        title: '一般向量组',
+        vecs:  [[2,-1,3],[-1,2,1],[1,3,-2]]
+      },
+    ];
+
+    const samplesGrid = document.getElementById('samplesGrid');
+    SAMPLES.forEach(({ title, vecs }) => {
+      const card = document.createElement('div');
+      card.className = 'sample-card';
+      const h3 = document.createElement('h3');
+      h3.textContent = title;
+      card.appendChild(h3);
+      const c = document.createElement('canvas');
+      c.width = 220; c.height = 200;
+      c.className = 'sample-canvas';
+      card.appendChild(c);
+      samplesGrid.appendChild(card);
+      createVectorScene(c, vecs, false);
+    });
+  </script>
+</body>
+</html>

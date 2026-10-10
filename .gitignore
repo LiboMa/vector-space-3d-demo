@@ -1,0 +1,7 @@
+# KiroCrew / platform artifacts (not part of the demo)
+.kiro/
+.claude/
+
+# OS / editor noise
+.DS_Store
+*.swp
